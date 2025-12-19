@@ -1,4 +1,4 @@
-"""Platform for sensor integration."""
+"""Platform for event integration."""
 
 from __future__ import annotations
 
@@ -20,7 +20,6 @@ from .const import (
     DOORBELL_STOP_EVENT,
 )
 from .door import UnifiAccessDoor
-from .hub import UnifiAccessHub
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -31,20 +30,16 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Add event entity for passed config entry."""
-    hub: UnifiAccessHub = hass.data[DOMAIN][config_entry.entry_id]
+    coordinator = hass.data[DOMAIN].get("coordinator")
 
-    if hub.use_polling is False:
-        coordinator = hass.data[DOMAIN]["coordinator"]
+    if coordinator is None or coordinator.data is None:
+        _LOGGER.debug("UniFi Access coordinator not ready; skipping event entities setup")
+        return
 
-        async_add_entities(
-            (AccessEventEntity(hass, door) for door in coordinator.data.values()),
-        )
-        async_add_entities(
-            (
-                DoorbellPressedEventEntity(hass, door)
-                for door in coordinator.data.values()
-            ),
-        )
+    doors = coordinator.data.values()
+
+    async_add_entities(AccessEventEntity(hass, door) for door in doors)
+    async_add_entities(DoorbellPressedEventEntity(hass, door) for door in doors)
 
 
 class AccessEventEntity(EventEntity):
@@ -55,19 +50,16 @@ class AccessEventEntity(EventEntity):
 
     @cached_property
     def should_poll(self) -> bool:
-        """Return whether entity should be polled."""
         return False
 
-    def __init__(self, hass: HomeAssistant, door) -> None:
-        """Initialize Unifi Access Door Lock."""
+    def __init__(self, hass: HomeAssistant, door: UnifiAccessDoor) -> None:
         self.hass = hass
-        self.door: UnifiAccessDoor = door
+        self.door = door
         self._attr_unique_id = f"{self.door.id}_access"
         self._attr_translation_placeholders = {"door_name": self.door.name}
 
     @property
     def device_info(self) -> DeviceInfo:
-        """Get device information."""
         return DeviceInfo(
             identifiers={(DOMAIN, self.door.id)},
             name=self.door.name,
@@ -76,18 +68,21 @@ class AccessEventEntity(EventEntity):
         )
 
     def _async_handle_event(self, event: str, event_attributes: dict[str, str]) -> None:
-        """Handle access events."""
-        _LOGGER.info("Triggering event %s with attributes %s", event, event_attributes)
-        self._trigger_event(event, event_attributes)
-        self.async_write_ha_state()
-        self.hass.bus.fire(event, event_attributes)
+        """Handle access events (THREAD-SAFE)."""
+
+        def _run_in_ha_loop() -> None:
+            _LOGGER.info("Triggering event %s with attributes %s", event, event_attributes)
+            self._trigger_event(event, event_attributes)
+            self.async_write_ha_state()
+            self.hass.bus.fire(event, event_attributes)
+
+        # This callback may be invoked from a websocket thread.
+        self.hass.loop.call_soon_threadsafe(_run_in_ha_loop)
 
     async def async_added_to_hass(self) -> None:
-        """Register event listener with hub."""
         self.door.add_event_listener("access", self._async_handle_event)
 
     async def async_will_remove_from_hass(self) -> None:
-        """Handle updates in case of push and removal."""
         await super().async_will_remove_from_hass()
         self.door.remove_event_listener("access", self._async_handle_event)
 
@@ -102,38 +97,37 @@ class DoorbellPressedEventEntity(EventEntity):
 
     @cached_property
     def should_poll(self) -> bool:
-        """Return whether entity should be polled."""
         return False
 
-    def __init__(self, hass: HomeAssistant, door) -> None:
-        """Initialize Unifi Access Doorbell Event."""
+    def __init__(self, hass: HomeAssistant, door: UnifiAccessDoor) -> None:
         self.hass = hass
-        self.door: UnifiAccessDoor = door
+        self.door = door
         self._attr_unique_id = f"{self.door.id}_doorbell_press"
         self._attr_translation_placeholders = {"door_name": self.door.name}
 
     @property
     def device_info(self) -> DeviceInfo:
-        """Get device information."""
         return DeviceInfo(
             identifiers={(DOMAIN, self.door.id)},
             name=self.door.name,
-            model=self.door.hub_type,
+            model=getattr(self.door, "hub_type", "UAH"),
             manufacturer="Unifi",
         )
 
     def _async_handle_event(self, event: str, event_attributes: dict[str, str]) -> None:
-        """Handle doorbell events."""
-        _LOGGER.info("Received event %s with attributes %s", event, event_attributes)
-        self._trigger_event(event, event_attributes)
-        self.async_write_ha_state()
-        self.hass.bus.fire(event, event_attributes)
+        """Handle doorbell events (THREAD-SAFE)."""
+
+        def _run_in_ha_loop() -> None:
+            _LOGGER.info("Received event %s with attributes %s", event, event_attributes)
+            self._trigger_event(event, event_attributes)
+            self.async_write_ha_state()
+            self.hass.bus.fire(event, event_attributes)
+
+        self.hass.loop.call_soon_threadsafe(_run_in_ha_loop)
 
     async def async_added_to_hass(self) -> None:
-        """Register event listener with door."""
         self.door.add_event_listener("doorbell_press", self._async_handle_event)
 
     async def async_will_remove_from_hass(self) -> None:
-        """Handle updates in case of push and removal."""
         await super().async_will_remove_from_hass()
         self.door.remove_event_listener("doorbell_press", self._async_handle_event)
