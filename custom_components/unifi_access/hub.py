@@ -3,6 +3,8 @@
 This module interacts with the Unifi Access API server.
 """
 
+from __future__ import annotations
+
 import asyncio
 from collections.abc import Callable
 from datetime import datetime
@@ -40,10 +42,7 @@ EmergencyData = dict[str, bool]
 
 
 class DoorLockRule(TypedDict):
-    """DoorLockRule.
-
-    This class defines the different locking rules.
-    """
+    """DoorLockRule."""
 
     type: Literal[
         "keep_lock", "keep_unlock", "custom", "reset", "lock_early", "lock_now"
@@ -52,37 +51,25 @@ class DoorLockRule(TypedDict):
 
 
 class DoorLockRuleStatus(TypedDict):
-    """DoorLockRuleStatus.
-
-    This class defines the active locking rule status.
-    """
+    """DoorLockRuleStatus."""
 
     type: Literal["schedule", "keep_lock", "keep_unlock", "custom", "lock_early", ""]
     ended_time: int
 
 
 def normalize_door_name(name: str) -> str:
-    """Normalize door name for comparison.
-
-    This function normalizes Unicode strings to handle special characters
-    like German umlauts (ö, ä, ü) correctly. It converts to NFC (canonical
-    composition) normalization form and strips whitespace.
-    """
+    """Normalize door name for comparison."""
     if not name:
         return ""
     return unicodedata.normalize("NFC", name.strip())
 
 
 class UnifiAccessHub:
-    """UnifiAccessHub.
-
-    This class takes care of interacting with the Unifi Access API.
-    """
+    """UnifiAccessHub."""
 
     def __init__(
         self, host: str, verify_ssl: bool = False, use_polling: bool = False
     ) -> None:
-        """Initialize."""
         self.use_polling = use_polling
         self.verify_ssl = verify_ssl
         if self.verify_ssl is False:
@@ -113,23 +100,26 @@ class UnifiAccessHub:
         self.evacuation = False
         self.lockdown = False
         self.supports_door_lock_rules = True
-        self.update_t = None
+        self.update_t: Thread | None = None
         self._callbacks: set[Callable] = set()
-        self.loop = asyncio.get_event_loop()
+
+        # Will be set to hass.loop by __init__.py
+        self.loop: asyncio.AbstractEventLoop | None = None
+
+    def set_ha_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Set Home Assistant event loop."""
+        self.loop = loop
 
     @property
     def doors(self):
-        """Get current doors."""
         return self._doors
 
     def set_api_token(self, api_token):
-        """Set API Access Token."""
         self._api_token = api_token
         self._http_headers["Authorization"] = f"Bearer {self._api_token}"
         self._websocket_headers["Authorization"] = f"Bearer {self._api_token}"
 
     def update(self):
-        """Get latest door data."""
         _LOGGER.debug(
             "Getting door updates from Unifi Access %s Use Polling %s. Doors? %s",
             self.host,
@@ -138,31 +128,20 @@ class UnifiAccessHub:
         )
         data = self._make_http_request(f"{self.host}{DOORS_URL}")
 
-        for _i, door in enumerate(data):
-            if door["is_bind_hub"] is True:
+        for door in data:
+            if door.get("is_bind_hub") is True:
                 door_id = door["id"]
                 door_lock_rule = {"type": "", "ended_time": 0}
                 if self.supports_door_lock_rules:
                     door_lock_rule = self.get_door_lock_rule(door_id)
+
                 if door_id in self.doors:
                     existing_door = self.doors[door_id]
                     existing_door.name = normalize_door_name(door["name"])
                     existing_door.door_position_status = door["door_position_status"]
-                    existing_door.door_lock_relay_status = door[
-                        "door_lock_relay_status"
-                    ]
+                    existing_door.door_lock_relay_status = door["door_lock_relay_status"]
                     existing_door.lock_rule = door_lock_rule["type"]
                     existing_door.lock_rule_ended_time = door_lock_rule["ended_time"]
-                    _LOGGER.debug(
-                        "Updated existing door, id: %s, name: %s, dps: %s, door_lock_relay_status: %s, door lock rule: %s, door lock rule ended time: %s using polling %s",
-                        door_id,
-                        door["name"],
-                        door["door_position_status"],
-                        door["door_lock_relay_status"],
-                        door_lock_rule["type"],
-                        door_lock_rule["ended_time"],
-                        self.use_polling,
-                    )
                 else:
                     self._doors[door_id] = UnifiAccessDoor(
                         door_id=door["id"],
@@ -172,16 +151,6 @@ class UnifiAccessHub:
                         door_lock_rule=door_lock_rule["type"],
                         door_lock_rule_ended_time=door_lock_rule["ended_time"],
                         hub=self,
-                    )
-                    _LOGGER.debug(
-                        "Found new door, id: %s, name: %s, dps: %s, door_lock_relay_status: %s, door lock rule: %s, door lock rule ended time: %s, using polling: %s",
-                        door_id,
-                        door["name"],
-                        door["door_position_status"],
-                        door["door_lock_relay_status"],
-                        door_lock_rule["type"],
-                        door_lock_rule["ended_time"],
-                        self.use_polling,
                     )
             else:
                 _LOGGER.debug("Door %s is not bound to a hub. Ignoring", door)
@@ -194,20 +163,15 @@ class UnifiAccessHub:
         return self._doors
 
     def authenticate(self, api_token: str) -> str:
-        """Test if we can authenticate with the host."""
         self.set_api_token(api_token)
         _LOGGER.info("Authenticating %s", self.host)
         try:
             self.update()
         except ApiError:
-            _LOGGER.error(
-                "Could perform action with %s. Check host and token", self.host
-            )
+            _LOGGER.error("Could perform action with %s. Check host and token", self.host)
             return "api_error"
         except ApiAuthError:
-            _LOGGER.error(
-                "Could not authenticate with %s. Check host and token", self.host
-            )
+            _LOGGER.error("Could not authenticate with %s. Check host and token", self.host)
             return "api_auth_error"
         except SSLError:
             _LOGGER.error("Error validating SSL Certificate for %s", self.host)
@@ -219,13 +183,11 @@ class UnifiAccessHub:
         return "ok"
 
     def get_door_lock_rule(self, door_id: str) -> DoorLockRuleStatus:
-        """Get door lock rule."""
         _LOGGER.debug("Getting door lock rule for door_id %s", door_id)
         try:
             data = self._make_http_request(
                 f"{self.host}{DOOR_LOCK_RULE_URL}".format(door_id=door_id)
             )
-            _LOGGER.debug("Got door lock rule for door_id %s %s", door_id, data)
             return cast(DoorLockRuleStatus, data)
         except (ApiError, KeyError):
             self.supports_door_lock_rules = False
@@ -233,21 +195,14 @@ class UnifiAccessHub:
             return {"type": "", "ended_time": 0}
 
     def set_door_lock_rule(self, door_id: str, door_lock_rule: DoorLockRule) -> None:
-        """Set door lock rule."""
-        _LOGGER.info(
-            "Setting door lock rule for Door ID %s %s", door_id, door_lock_rule
-        )
+        _LOGGER.info("Setting door lock rule for Door ID %s %s", door_id, door_lock_rule)
         self._make_http_request(
             f"{self.host}{DOOR_LOCK_RULE_URL}".format(door_id=door_id),
             "PUT",
             door_lock_rule,
         )
-        # self.doors[door_id].lock_rule = door_lock_rule["type"]
-        # if door_lock_rule["type"] == "custom":
-        #     self.doors[door_id].lock_rule_interval = door_lock_rule["interval"]
 
     def get_doors_emergency_status(self) -> EmergencyData:
-        """Get doors emergency status."""
         _LOGGER.debug("Getting doors emergency status")
         data = self._make_http_request(f"{self.host}{DOORS_EMERGENCY_URL}")
         self.evacuation = data["evacuation"]
@@ -256,27 +211,18 @@ class UnifiAccessHub:
         return data
 
     def set_doors_emergency_status(self, emergency_data: EmergencyData) -> None:
-        """Set doors emergency status."""
         _LOGGER.info("Setting doors emergency status %s", emergency_data)
-        self._make_http_request(
-            f"{self.host}{DOORS_EMERGENCY_URL}", "PUT", emergency_data
-        )
+        self._make_http_request(f"{self.host}{DOORS_EMERGENCY_URL}", "PUT", emergency_data)
         self.evacuation = emergency_data.get("evacuation", self.evacuation)
         self.lockdown = emergency_data.get("lockdown", self.lockdown)
         _LOGGER.debug("Emergency status set %s", emergency_data)
 
     def unlock_door(self, door_id: str) -> None:
-        """Test if we can authenticate with the host."""
         _LOGGER.info("Unlocking door with id %s", door_id)
-        self._make_http_request(
-            f"{self.host}{DOOR_UNLOCK_URL}".format(door_id=door_id), "PUT"
-        )
+        self._make_http_request(f"{self.host}{DOOR_UNLOCK_URL}".format(door_id=door_id), "PUT")
 
     def _make_http_request(self, url, method="GET", data=None) -> dict:
-        """Make HTTP request to Unifi Access API server."""
-        _LOGGER.debug(
-            "Making HTTP %s Request with URL %s and data %s", method, url, data
-        )
+        _LOGGER.debug("Making HTTP %s Request with URL %s and data %s", method, url, data)
         r = request(
             method,
             url,
@@ -293,13 +239,10 @@ class UnifiAccessHub:
             raise ApiError
 
         response = r.json()
-
         _LOGGER.debug("HTTP Response %s", response)
-
         return response["data"]
 
     def _get_thumbnail_image(self, url) -> bytes:
-        """Get image from Unifi Access API server."""
         _LOGGER.debug("Getting thumbnail with URL %s", url)
         r = request(
             "GET",
@@ -308,32 +251,20 @@ class UnifiAccessHub:
             verify=self.verify_ssl,
             timeout=10,
         )
-
         if r.status_code == 401:
             raise ApiAuthError
-
         if r.status_code != 200:
             raise ApiError
-        _LOGGER.debug("Got thumbnail response")
         return r.content
 
     def _handle_location_update_v2(self, update):
-        """Process location update V2."""
         existing_door = None
         if update["data"]["location_type"] == "door":
             door_id = update["data"]["id"]
-            _LOGGER.debug("access.data.v2.location.update: door id %s", door_id)
             if door_id in self.doors:
                 existing_door = self.doors[door_id]
-                _LOGGER.debug(
-                    "updating location V2 for door name %s, id %s",
-                    existing_door.name,
-                    door_id,
-                )
                 if "state" in update["data"]:
-                    existing_door.door_position_status = update["data"]["state"].get(
-                        "dps", "close"
-                    )
+                    existing_door.door_position_status = update["data"]["state"].get("dps", "close")
                     existing_door.door_lock_relay_status = (
                         "lock"
                         if update["data"]["state"].get("lock", "locked") == "locked"
@@ -347,12 +278,8 @@ class UnifiAccessHub:
                     elif "remain_unlock" in update["data"]["state"]:
                         lock_rule = "remain_unlock"
                     if lock_rule:
-                        existing_door.lock_rule = update["data"]["state"][lock_rule][
-                            "type"
-                        ]
-                        existing_door.lock_rule_ended_time = update["data"]["state"][
-                            lock_rule
-                        ]["until"]
+                        existing_door.lock_rule = update["data"]["state"][lock_rule]["type"]
+                        existing_door.lock_rule_ended_time = update["data"]["state"][lock_rule]["until"]
                 if "thumbnail" in update["data"]:
                     try:
                         existing_door.thumbnail = self._get_thumbnail_image(
@@ -365,43 +292,38 @@ class UnifiAccessHub:
                         _LOGGER.error("Could not get thumbnail for door id %s", door_id)
         return existing_door
 
-    def on_message(self, ws: websocket.WebSocketApp, message):
-        """Handle messages received on the websocket client.
+    def _schedule_coro(self, coro: Any) -> None:
+        """Schedule a coroutine safely on HA loop."""
+        if self.loop is None:
+            _LOGGER.error("HA loop not set on hub; cannot schedule coroutine")
+            return
 
-        Doorbell presses are relying on door names so if those are not unique, it may cause some issues
-        """
+        if asyncio.iscoroutine(coro):
+            self.loop.call_soon_threadsafe(self.loop.create_task, coro)
+        else:
+            _LOGGER.error("Expected coroutine, got %s", type(coro))
+
+    def on_message(self, ws: websocket.WebSocketApp, message):
+        """Handle messages received on the websocket client."""
         event = None
         event_attributes = None
         event_done_callback = None
-        if "Hello" not in message:
+
+        try:
+            if "Hello" in message:
+                return
+
             _LOGGER.debug("websocket message received %s", message)
             update = json.loads(message)
             existing_door = None
-            match update["event"]:
+
+            match update.get("event"):
                 case "access.data.v2.location.update":
-                    _LOGGER.debug(
-                        "access.data.v2.location.update: device type %s", update["data"]
-                    )
                     existing_door = self._handle_location_update_v2(update)
-                    if existing_door:
-                        _LOGGER.info(
-                            "Location update V2 door name %s with id %s config updated. locked: %s dps: %s, lock rule: %s, lock rule ended time %s",
-                            existing_door.name,
-                            existing_door.id,
-                            existing_door.door_lock_relay_status,
-                            existing_door.door_position_status,
-                            existing_door.lock_rule,
-                            existing_door.lock_rule_ended_time,
-                        )
+
                 case "access.remote_view":
                     door_name = update["data"]["door_name"]
-                    _LOGGER.debug("access.remote_view %s", door_name)
                     normalized_door_name = normalize_door_name(door_name)
-                    _LOGGER.debug(
-                        "Normalized door name from websocket: '%s' -> '%s'",
-                        door_name,
-                        normalized_door_name,
-                    )
                     existing_door = next(
                         (
                             door
@@ -409,16 +331,7 @@ class UnifiAccessHub:
                             if normalize_door_name(door.name) == normalized_door_name
                         ),
                         None,
-                    )  # FIXME this is likely unreliable. API does not seem to provide door id forthis access.remote_view  # pylint: disable=fixme
-                    if existing_door is None:
-                        _LOGGER.warning(
-                            "Could not find door with normalized name '%s'. Available doors: %s",
-                            normalized_door_name,
-                            [
-                                f"'{door.name}' (normalized: '{normalize_door_name(door.name)}')"
-                                for door in self.doors.values()
-                            ],
-                        )
+                    )
                     if existing_door is not None:
                         existing_door.doorbell_request_id = update["data"]["request_id"]
                         event = "doorbell_press"
@@ -427,16 +340,9 @@ class UnifiAccessHub:
                             "door_id": existing_door.id,
                             "type": DOORBELL_START_EVENT,
                         }
-                        _LOGGER.info(
-                            "Doorbell press on %s request id %s",
-                            door_name,
-                            update["data"]["request_id"],
-                        )
+
                 case "access.remote_view.change":
                     doorbell_request_id = update["data"]["remote_call_request_id"]
-                    _LOGGER.debug(
-                        "access.remote_view.change request id %s", doorbell_request_id
-                    )
                     existing_door = next(
                         (
                             door
@@ -453,18 +359,8 @@ class UnifiAccessHub:
                             "door_id": existing_door.id,
                             "type": DOORBELL_STOP_EVENT,
                         }
-                        _LOGGER.info(
-                            "Doorbell press stopped on %s request id %s",
-                            existing_door.name,
-                            doorbell_request_id,
-                        )
-                # Currently no way to know via HTTP API which door is associated with which device/hub
-                # Even though we can fetch devices and doors separately, there is no link between them
-                # So we have to rely on websocket messages to link them together
+
                 case "access.data.device.update":
-                    _LOGGER.debug(
-                        "access.data.device.update: device type %s", update["data"]
-                    )
                     device_id = update["data"]["unique_id"]
                     device_type = update["data"]["device_type"]
                     door_id = update["data"].get("door", {}).get("unique_id")
@@ -472,15 +368,8 @@ class UnifiAccessHub:
                         existing_door = self.doors[door_id]
                         existing_door.hub_type = device_type
                         existing_door.hub_id = device_id
-                        _LOGGER.debug(
-                            "Door name %s door id %s is now associated with hub type %s hub id %s",
-                            existing_door.name,
-                            existing_door.id,
-                            existing_door.hub_type,
-                            existing_door.hub_id,
-                        )
+
                 case "access.logs.add":
-                    _LOGGER.debug("access.logs.add %s", update["data"])
                     door = next(
                         (
                             target
@@ -492,31 +381,22 @@ class UnifiAccessHub:
                     if door is not None:
                         door_id = door.get("id")
                         existing_door = self.doors.get(door_id)
-                        # Access API 3.4.31 has a bug where the door id is actually the hub id
+
+                        # Access API 3.4.31 bug: door id is actually hub id
                         if existing_door is None:
-                            _LOGGER.debug(
-                                "Buggy version of unifi access api detected - looking for door by hub id %s",
-                                door_id,
-                            )
                             existing_door = next(
                                 (
-                                    door
-                                    for door in self.doors.values()
-                                    if getattr(door, "hub_id", None) == door_id
+                                    d
+                                    for d in self.doors.values()
+                                    if getattr(d, "hub_id", None) == door_id
                                 ),
                                 None,
                             )
+
                         if existing_door is not None:
-                            _LOGGER.debug(
-                                "access log added for door id %s, hub id %s",
-                                existing_door.id,
-                                existing_door.hub_id,
-                            )
                             actor = update["data"]["_source"]["actor"]["display_name"]
-                            # "REMOTE_THROUGH_UAH" , "NFC" , "MOBILE_TAP" , "PIN_CODE"
-                            authentication = update["data"]["_source"][
-                                "authentication"
-                            ]["credential_provider"]
+                            authentication = update["data"]["_source"]["authentication"]["credential_provider"]
+
                             device_config = next(
                                 (
                                     target
@@ -535,102 +415,76 @@ class UnifiAccessHub:
                                     "authentication": authentication,
                                     "type": ACCESS_EVENT.format(type=access_type),
                                 }
-                                _LOGGER.info(
-                                    "Door name %s with id %s accessed by %s. authentication %s, access type: %s",
-                                    existing_door.name,
-                                    existing_door.id,
-                                    actor,
-                                    authentication,
-                                    access_type,
-                                )
+
                 case "access.hw.door_bell":
                     door_id = update["data"]["door_id"]
-                    door_name = update["data"]["door_name"]
-                    _LOGGER.info(
-                        "Hardware Doorbell Press %s door id %s",
-                        door_name,
-                        door_id,
-                    )
                     if door_id in self.doors:
                         existing_door = self.doors[door_id]
-                        if existing_door is not None:
-                            existing_door.doorbell_request_id = update["data"][
-                                "request_id"
-                            ]
-                            event = "doorbell_press"
-                            event_attributes = {
+                        existing_door.doorbell_request_id = update["data"]["request_id"]
+                        event = "doorbell_press"
+                        event_attributes = {
+                            "door_name": existing_door.name,
+                            "door_id": existing_door.id,
+                            "type": DOORBELL_START_EVENT,
+                        }
+
+                        async def on_complete(_fut):
+                            existing_door.doorbell_request_id = None
+                            ev = "doorbell_press"
+                            attrs = {
                                 "door_name": existing_door.name,
                                 "door_id": existing_door.id,
-                                "type": DOORBELL_START_EVENT,
+                                "type": DOORBELL_STOP_EVENT,
                             }
+                            await asyncio.sleep(2)
+                            await existing_door.trigger_event(ev, attrs)
 
-                            # We don't seem to get a message that indicates the end of the doorbell being active
-                            # We just toggle the sensor for 2 seconds and return it to its original state
-                            async def on_complete(_fut):
-                                existing_door.doorbell_request_id = None
-                                event = "doorbell_press"
-                                event_attributes = {
-                                    "door_name": existing_door.name,
-                                    "door_id": existing_door.id,
-                                    "type": DOORBELL_STOP_EVENT,
-                                }
-                                await asyncio.sleep(2)
-                                await existing_door.trigger_event(
-                                    event, event_attributes
-                                )
+                        event_done_callback = on_complete
 
-                            event_done_callback = on_complete
-                            _LOGGER.info(
-                                "Hardware doorbell press on %s request id %s",
-                                door_name,
-                                update["data"]["request_id"],
-                            )
                 case "access.data.setting.update":
                     self.evacuation = update["data"]["evacuation"]
                     self.lockdown = update["data"]["lockdown"]
-                    asyncio.run_coroutine_threadsafe(self.publish_updates(), self.loop)
-                    _LOGGER.info(
-                        "Settings updated. Evacuation %s, Lockdown %s",
-                        self.evacuation,
-                        self.lockdown,
-                    )
-                case _:
-                    _LOGGER.debug("unhandled websocket message %s", update["event"])
+                    self._schedule_coro(self.publish_updates())
 
-            if existing_door:
-                asyncio.run_coroutine_threadsafe(
-                    existing_door.publish_updates(), self.loop
-                )
-                # Doing this relies on the idea that a single message will only have one message_type
-                # and that a given message will only update events if a single door was updated.
-                # Refactor would be required if that doesn't hold true.
+                case _:
+                    _LOGGER.debug("unhandled websocket message %s", update.get("event"))
+
+            if existing_door is not None:
+                # publish door state updates
+                self._schedule_coro(existing_door.publish_updates())
+
+                # fire door event if present
                 if event is not None and event_attributes is not None:
-                    task = asyncio.run_coroutine_threadsafe(
-                        existing_door.trigger_event(event, event_attributes),
-                        self.loop,
-                    )
-                    if event_done_callback is not None:
-                        task.add_done_callback(event_done_callback)
+                    coro = existing_door.trigger_event(event, event_attributes)
+                    if asyncio.iscoroutine(coro):
+                        # schedule and optionally chain callback
+                        if self.loop is None:
+                            _LOGGER.error("HA loop not set; cannot schedule trigger_event")
+                        else:
+                            # create task thread-safe
+                            def _create_task():
+                                task = self.loop.create_task(coro)
+                                if event_done_callback is not None:
+                                    task.add_done_callback(event_done_callback)
+                            self.loop.call_soon_threadsafe(_create_task)
+                    else:
+                        _LOGGER.error("trigger_event did not return coroutine (got %s)", type(coro))
+
+        except Exception as err:
+            _LOGGER.exception("Got websocket error %s", err)
 
     def on_error(self, ws: websocket.WebSocketApp, error):
-        """Handle errors in the websocket client."""
         _LOGGER.exception("Got websocket error %s", error)
 
     def on_open(self, ws: websocket.WebSocketApp):
-        """Show message on connection."""
         _LOGGER.info("Websocket connection established")
 
     def on_close(self, ws: websocket.WebSocketApp, close_status_code, close_msg):
-        """Handle websocket closures."""
         _LOGGER.error(
             "Websocket connection closed code: %s message: %s",
             close_status_code,
             close_msg,
         )
-        sslopt: dict[Any, Any]
-        if self.verify_ssl is False:
-            sslopt = {"cert_reqs": ssl.CERT_NONE}
-        ws.run_forever(sslopt=sslopt, reconnect=5)
 
     def start_continuous_updates(self):
         """Start listening for updates in a separate thread using websocket-client."""
@@ -657,14 +511,11 @@ class UnifiAccessHub:
         ws.run_forever(sslopt=sslopt, reconnect=5)
 
     def register_callback(self, callback: Callable[[], None]) -> None:
-        """Register callback, called when settings change."""
         self._callbacks.add(callback)
 
     def remove_callback(self, callback: Callable[[], None]) -> None:
-        """Remove previously registered callback."""
         self._callbacks.discard(callback)
 
     async def publish_updates(self) -> None:
-        """Schedule call all registered callbacks."""
         for callback in self._callbacks:
             callback()
