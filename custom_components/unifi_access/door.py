@@ -30,6 +30,7 @@ class UnifiAccessDoor:
         door_lock_rule_ended_time: int,
         hub,
     ) -> None:
+        """Initialize door."""
         self._callbacks: set[Callable] = set()
         self._event_listeners: dict[str, set] = {
             "access": set(),
@@ -61,18 +62,22 @@ class UnifiAccessDoor:
 
     @property
     def doorbell_pressed(self) -> bool:
+        """Get doorbell pressed status."""
         return self.doorbell_request_id is not None
 
     @property
     def id(self) -> str:
+        """Get door ID."""
         return self._id
 
     @property
     def is_open(self):
+        """Get door status."""
         return self.door_position_status == "open"
 
     @property
     def is_locked(self):
+        """Solely used for locked state when calling lock."""
         if self.door_lock_relay_status == "":
             self.door_lock_relay_status = "lock"
             _LOGGER.warning("Relay status not set - assuming locked")
@@ -80,16 +85,20 @@ class UnifiAccessDoor:
 
     @property
     def is_locking(self):
+        """Solely used for locking state when calling lock."""
         return False
 
     @property
     def is_unlocking(self):
+        """Solely used for unlocking state when calling unlock."""
         return self._is_unlocking
 
     def open(self) -> None:
+        """Open door."""
         self.unlock()
 
     def unlock(self) -> None:
+        """Unlock door."""
         if self.is_locked:
             self._is_unlocking = True
             self._hub.unlock_door(self._id)
@@ -99,27 +108,33 @@ class UnifiAccessDoor:
             _LOGGER.error("Door with door ID %s is already unlocked", self.id)
 
     def set_lock_rule(self, lock_rule_type) -> None:
+        """Set lock rule."""
         new_door_lock_rule = {"type": lock_rule_type}
         if lock_rule_type == "custom":
             new_door_lock_rule["interval"] = self.lock_rule_interval
         self._hub.set_door_lock_rule(self._id, new_door_lock_rule)
 
     def get_lock_rule(self) -> None:
+        """Get lock rule."""
         self._hub.get_door_lock_rule(self._id)
 
     def register_callback(self, callback: Callable[[], None]) -> None:
+        """Register callback, called when door changes state."""
         self._callbacks.add(callback)
 
     def remove_callback(self, callback: Callable[[], None]) -> None:
+        """Remove previously registered callback."""
         self._callbacks.discard(callback)
 
     async def publish_updates(self) -> None:
+        """Schedule call all registered callbacks."""
         for callback in self._callbacks:
             callback()
 
     def add_event_listener(
         self, event: str, callback: Callable[[str, dict[str, str]], None]
     ) -> None:
+        """Add event listener."""
         if self._event_listeners.get(event) is not None:
             self._event_listeners[event].add(callback)
             _LOGGER.info("Registered event %s for door %s", event, self.name)
@@ -127,14 +142,12 @@ class UnifiAccessDoor:
     def remove_event_listener(
         self, event: str, callback: Callable[[str, dict[str, str]], None]
     ) -> None:
+        """Remove event listener."""
         _LOGGER.info("Unregistered event %s for door %s", event, self.name)
         self._event_listeners[event].discard(callback)
 
     async def trigger_event(self, event: str, data: dict[str, str]):
-        """Trigger event.
-
-        NOTE: Must remain async because hub schedules it onto HA loop.
-        """
+        """Trigger event."""
         _LOGGER.info(
             "Triggering event %s for door %s with data %s",
             event,
@@ -148,6 +161,7 @@ class UnifiAccessDoor:
             )
 
     def __eq__(self, value) -> bool:
+        """Check if two doors are equal."""
         if isinstance(value, UnifiAccessDoor):
             return (
                 self.id == value.id
@@ -162,9 +176,5 @@ class UnifiAccessDoor:
         return False
 
     def __repr__(self):
-        return (
-            f"<UnifiAccessDoor id={self.id} name={self.name} hub_type={self.hub_type} "
-            f"hub_id={self.hub_id} door_position_status={self.door_position_status} "
-            f"door_lock_relay_status={self.door_lock_relay_status} lock_rule={self.lock_rule} "
-            f"lock_rule_ended_time={self.lock_rule_ended_time}>"
-        )
+        """Return string representation of door."""
+        return f"<UnifiAccessDoor id={self.id} name={self.name} hub_type={self.hub_type} hub_id={self.hub_id} door_position_status={self.door_position_status} door_lock_relay_status={self.door_lock_relay_status} lock_rule={self.lock_rule} lock_rule_ended_time={self.lock_rule_ended_time}>"
