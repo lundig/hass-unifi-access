@@ -47,13 +47,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entry.data["host"], entry.data["verify_ssl"], entry.data["use_polling"]
     )
     hub.set_api_token(entry.data["api_token"])
-
-    # IMPORTANT: ensure hub uses Home Assistant's event loop
-    hub.set_ha_loop(hass.loop)
-
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = hub
 
     coordinator: UnifiAccessCoordinator = UnifiAccessCoordinator(hass, hub)
+
     await coordinator.async_config_entry_first_refresh()
 
     hass.data[DOMAIN]["coordinator"] = coordinator
